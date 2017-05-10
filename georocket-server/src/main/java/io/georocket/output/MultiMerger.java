@@ -49,20 +49,26 @@ public class MultiMerger implements Merger<ChunkMeta> {
   @Override
   public Completable init(ChunkMeta meta) {
     return ensureMerger(meta)
-      .andThen((meta instanceof XMLChunkMeta) ? 
-          xmlMerger.init((XMLChunkMeta)meta)
-        : geoJsonMerger.init((GeoJsonChunkMeta)meta)
-      );
+      .toObservable()
+      .flatMapCompletable(v -> {
+        if (meta instanceof XMLChunkMeta) {
+          return xmlMerger.init((XMLChunkMeta) meta);
+        }
+        return geoJsonMerger.init((GeoJsonChunkMeta)meta);
+      }).toCompletable();
   }
 
   @Override
   public Completable merge(ChunkReadStream chunk, ChunkMeta meta,
       WriteStream<Buffer> out) {
     return ensureMerger(meta)
-      .andThen(meta instanceof XMLChunkMeta ? 
-          xmlMerger.merge(chunk, (XMLChunkMeta)meta, out)
-        : geoJsonMerger.merge(chunk, (GeoJsonChunkMeta)meta, out)
-      );
+      .toObservable()
+      .flatMapCompletable(v -> {
+        if (meta instanceof XMLChunkMeta) {
+          return xmlMerger.merge(chunk, (XMLChunkMeta)meta, out);
+        }
+        return geoJsonMerger.merge(chunk, (GeoJsonChunkMeta)meta, out);
+      }).toCompletable();
   }
 
   @Override

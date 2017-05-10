@@ -38,12 +38,10 @@ public class ServiceTest {
 
     ServiceDiscovery discovery = ServiceDiscovery.create(vertx);
     Service.publishOnce("A", "A", discovery, vertx)
-      .flatMap(v -> Service.publishOnce("A", "A", discovery, vertx))
-      .flatMap(v -> Service.publishOnce("A", "B", discovery, vertx))
-      .flatMap(v -> {
-        return discovery.getRecordsObservable(record -> true);
-      })
-      .doOnTerminate(discovery::close)
+      .andThen(Service.publishOnce("A", "A", discovery, vertx))
+      .andThen(Service.publishOnce("A", "B", discovery, vertx))
+      .andThen(discovery.rxGetRecords(record -> true))
+      .doAfterTerminate(discovery::close)
       .subscribe(recordList -> {
         List<Record> lA = recordList.stream()
             .filter(r -> r.getName().equals("A"))
@@ -64,8 +62,8 @@ public class ServiceTest {
 
     ServiceDiscovery discovery = ServiceDiscovery.create(vertx);
     Service.publishOnce("A", "a", discovery, vertx)
-      .flatMap(v -> Service.publishOnce("A", "b", discovery, vertx))
-      .flatMap(v -> Service.discover("A", discovery, vertx))
+      .andThen(Service.publishOnce("A", "b", discovery, vertx))
+      .andThen(Service.discover("A", discovery, vertx))
       .count()
       .doOnTerminate(discovery::close)
       .subscribe(count -> {
@@ -97,7 +95,7 @@ public class ServiceTest {
 
     ServiceDiscovery discovery = ServiceDiscovery.create(vertx);
     Service.publishOnce("A", "a", discovery, vertx)
-      .flatMap(v -> Service.discover("A", discovery, vertx))
+      .andThen(Service.discover("A", discovery, vertx))
       .doOnTerminate(discovery::close)
       .subscribe(service -> {
         service.broadcast(data);
@@ -139,8 +137,8 @@ public class ServiceTest {
 
     ServiceDiscovery discovery = ServiceDiscovery.create(vertx);
     Service.publishOnce("A", "a", discovery, vertx)
-      .flatMap(v -> Service.publishOnce("A", "b", discovery, vertx))
-      .flatMap(v -> Service.discover("A", discovery, vertx))
+      .andThen(Service.publishOnce("A", "b", discovery, vertx))
+      .andThen(Service.discover("A", discovery, vertx))
       .doOnTerminate(discovery::close)
       .subscribe(service -> {
         service.broadcast(data);
@@ -158,13 +156,13 @@ public class ServiceTest {
 
     ServiceDiscovery discovery = ServiceDiscovery.create(vertx);
     Service.publishOnce("A", "a", discovery, vertx)
-      .flatMap(v -> Service.discover("A", discovery, vertx))
+      .andThen(Service.discover("A", discovery, vertx))
       .count()
       .doOnNext(count -> {
         context.assertEquals(1, count);
       })
       .flatMap(v -> Service.discover("A", discovery, vertx))
-      .flatMap(service -> service.unpublish(discovery))
+      .flatMapCompletable(service -> service.unpublish(discovery))
       .flatMap(v -> Service.discover("A", discovery, vertx))
       .count()
       .doOnTerminate(discovery::close)

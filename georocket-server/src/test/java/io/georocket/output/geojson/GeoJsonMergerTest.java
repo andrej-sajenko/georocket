@@ -34,19 +34,17 @@ public class GeoJsonMergerTest {
     BufferWriteStream bws = new BufferWriteStream();
     Async async = context.async();
     metas
-      .flatMap(meta -> m.init(meta).map(v -> meta))
+      .flatMapSingle(meta -> m.init(meta).toSingleDefault(meta))
       .toList()
       .flatMap(l -> chunks.map(DelegateChunkReadStream::new)
           .<GeoJsonChunkMeta, Pair<ChunkReadStream, GeoJsonChunkMeta>>zipWith(l, Pair::of))
-      .flatMap(p -> m.merge(p.getLeft(), p.getRight(), bws))
-      .last()
-      .subscribe(v -> {
+      .flatMapCompletable(p -> m.merge(p.getLeft(), p.getRight(), bws))
+      .toCompletable()
+      .subscribe(() -> {
         m.finish(bws);
         context.assertEquals(jsonContents, bws.getBuffer().toString("utf-8"));
         async.complete();
-      }, err -> {
-        context.fail(err);
-      });
+      }, context::fail);
   }
   
   /**
@@ -238,12 +236,9 @@ public class GeoJsonMergerTest {
     BufferWriteStream bws = new BufferWriteStream();
     Async async = context.async();
     m.init(cm1)
-      .flatMap(v -> m.merge(new DelegateChunkReadStream(chunk1), cm1, bws))
-      .flatMap(v -> m.merge(new DelegateChunkReadStream(chunk2), cm2, bws))
-      .last()
-      .subscribe(v -> {
-        context.fail();
-      }, err -> {
+      .andThen(m.merge(new DelegateChunkReadStream(chunk1), cm1, bws))
+      .andThen(m.merge(new DelegateChunkReadStream(chunk2), cm2, bws))
+      .subscribe(context::fail, err -> {
         context.assertTrue(err instanceof IllegalStateException);
         async.complete();
       });
@@ -274,12 +269,11 @@ public class GeoJsonMergerTest {
     BufferWriteStream bws = new BufferWriteStream();
     Async async = context.async();
     m.init(cm1)
-      .flatMap(v -> m.init(cm2))
-      .flatMap(v -> m.merge(new DelegateChunkReadStream(chunk1), cm1, bws))
-      .flatMap(v -> m.merge(new DelegateChunkReadStream(chunk2), cm2, bws))
-      .flatMap(v -> m.merge(new DelegateChunkReadStream(chunk3), cm3, bws))
-      .last()
-      .subscribe(v -> {
+      .andThen(m.init(cm2))
+      .andThen(m.merge(new DelegateChunkReadStream(chunk1), cm1, bws))
+      .andThen(m.merge(new DelegateChunkReadStream(chunk2), cm2, bws))
+      .andThen(m.merge(new DelegateChunkReadStream(chunk3), cm3, bws))
+      .subscribe(() -> {
         m.finish(bws);
         context.assertEquals(jsonContents, bws.getBuffer().toString("utf-8"));
         async.complete();

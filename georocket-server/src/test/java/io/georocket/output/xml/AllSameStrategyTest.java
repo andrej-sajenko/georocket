@@ -37,11 +37,11 @@ public class AllSameStrategyTest {
     MergeStrategy strategy = new AllSameStrategy();
     BufferWriteStream bws = new BufferWriteStream();
     strategy.init(cm)
-      .flatMap(v -> strategy.init(cm))
-      .flatMap(v -> strategy.merge(new DelegateChunkReadStream(chunk1), cm, bws))
-      .flatMap(v -> strategy.merge(new DelegateChunkReadStream(chunk2), cm, bws))
-      .doOnNext(v -> strategy.finish(bws))
-      .subscribe(v -> {
+      .andThen(strategy.init(cm))
+      .andThen(strategy.merge(new DelegateChunkReadStream(chunk1), cm, bws))
+      .andThen(strategy.merge(new DelegateChunkReadStream(chunk2), cm, bws))
+      .doOnCompleted(() -> strategy.finish(bws))
+      .subscribe(() -> {
         context.assertEquals(XMLHEADER + "<root><test chunk=\"1\"></test><test chunk=\"2\"></test></root>",
             bws.getBuffer().toString("utf-8"));
         async.complete();
@@ -59,10 +59,10 @@ public class AllSameStrategyTest {
     BufferWriteStream bws = new BufferWriteStream();
     strategy.init(cm)
       // skip second init
-      .flatMap(v -> strategy.merge(new DelegateChunkReadStream(chunk1), cm, bws))
-      .flatMap(v -> strategy.merge(new DelegateChunkReadStream(chunk2), cm, bws))
-      .doOnNext(v -> strategy.finish(bws))
-      .subscribe(v -> {
+      .andThen(strategy.merge(new DelegateChunkReadStream(chunk1), cm, bws))
+      .andThen(strategy.merge(new DelegateChunkReadStream(chunk2), cm, bws))
+      .doOnCompleted(() -> strategy.finish(bws))
+      .subscribe(() -> {
         context.assertEquals(XMLHEADER + "<root><test chunk=\"1\"></test><test chunk=\"2\"></test></root>",
             bws.getBuffer().toString("utf-8"));
         async.complete();
@@ -83,16 +83,16 @@ public class AllSameStrategyTest {
     Async async = context.async();
     MergeStrategy strategy = new AllSameStrategy();
     strategy.canMerge(cm)
-      .doOnNext(c -> context.assertTrue(c))
-      .flatMap(v -> strategy.init(cm))
-      .flatMap(v -> strategy.canMerge(cm))
-      .doOnNext(c -> context.assertTrue(c))
+      .doOnSuccess(context::assertTrue)
+      .flatMapCompletable(v -> strategy.init(cm))
+      .to(c -> c.andThen(strategy.canMerge(cm)))
+      .doOnSuccess(context::assertTrue)
       .flatMap(v -> strategy.canMerge(cm2))
-      .doOnNext(c -> context.assertFalse(c))
+      .doOnSuccess(context::assertFalse)
       .flatMap(v -> strategy.canMerge(cm3))
-      .doOnNext(c -> context.assertFalse(c))
+      .doOnSuccess(context::assertFalse)
       .flatMap(v -> strategy.canMerge(cm4))
-      .doOnNext(c -> context.assertFalse(c))
+      .doOnSuccess(context::assertFalse)
       .subscribe(v -> {
         async.complete();
       }, context::fail);
@@ -110,8 +110,8 @@ public class AllSameStrategyTest {
     MergeStrategy strategy = new AllSameStrategy();
     BufferWriteStream bws = new BufferWriteStream();
     strategy.init(cm)
-      .flatMap(v -> strategy.merge(new DelegateChunkReadStream(chunk2), cm2, bws))
-      .subscribe(v -> context.fail(), err -> {
+      .to(c -> c.andThen(strategy.merge(new DelegateChunkReadStream(chunk2), cm2, bws)))
+      .subscribe(() -> context.fail("IllegalArgumentException expected"), err -> {
         context.assertTrue(err instanceof IllegalArgumentException);
         async.complete();
       });

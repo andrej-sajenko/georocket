@@ -63,11 +63,11 @@ public class MergeNamespacesStrategyTest {
     MergeStrategy strategy = new MergeNamespacesStrategy();
     BufferWriteStream bws = new BufferWriteStream();
     strategy.init(META1)
-      .flatMap(v -> strategy.init(META2))
-      .flatMap(v -> strategy.merge(new DelegateChunkReadStream(CHUNK1), META1, bws))
-      .flatMap(v -> strategy.merge(new DelegateChunkReadStream(CHUNK2), META2, bws))
-      .doOnNext(v -> strategy.finish(bws))
-      .subscribe(v -> {
+      .andThen(strategy.init(META2))
+      .andThen(strategy.merge(new DelegateChunkReadStream(CHUNK1), META1, bws))
+      .andThen(strategy.merge(new DelegateChunkReadStream(CHUNK2), META2, bws))
+      .doOnCompleted(() -> strategy.finish(bws))
+      .subscribe(() -> {
         context.assertEquals(XMLHEADER + EXPECTEDROOT + CONTENTS1 + CONTENTS2 +
             "</" + EXPECTEDROOT.getName() + ">", bws.getBuffer().toString("utf-8"));
         async.complete();
@@ -85,10 +85,10 @@ public class MergeNamespacesStrategyTest {
     BufferWriteStream bws = new BufferWriteStream();
     strategy.init(META1)
       // skip second init
-      .flatMap(v -> strategy.merge(new DelegateChunkReadStream(CHUNK1), META1, bws))
-      .flatMap(v -> strategy.merge(new DelegateChunkReadStream(CHUNK2), META2, bws))
-      .subscribe(v -> context.fail(), err -> {
-        context.assertTrue(err instanceof IllegalArgumentException);
+      .andThen(strategy.merge(new DelegateChunkReadStream(CHUNK1), META1, bws))
+      .andThen(strategy.merge(new DelegateChunkReadStream(CHUNK2), META2, bws))
+      .subscribe(() -> context.fail("IllegalArgumentException expected"), err -> {
+        context.assertTrue(err instanceof IllegalArgumentException, "Received error of type: " + err.getClass().getCanonicalName());
         async.complete();
       });
   }

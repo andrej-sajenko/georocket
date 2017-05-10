@@ -41,19 +41,17 @@ public class MultiMergerTest {
     BufferWriteStream bws = new BufferWriteStream();
     Async async = context.async();
     metas
-      .flatMap(meta -> m.init(meta).map(v -> meta))
+      .flatMapSingle(meta -> m.init(meta).toSingleDefault(meta))
       .toList()
       .flatMap(l -> chunks.map(DelegateChunkReadStream::new)
           .<ChunkMeta, Pair<ChunkReadStream, ChunkMeta>>zipWith(l, Pair::of))
-      .flatMap(p -> m.merge(p.getLeft(), p.getRight(), bws))
-      .last()
-      .subscribe(v -> {
+      .flatMapCompletable(p -> m.merge(p.getLeft(), p.getRight(), bws))
+      .toCompletable()
+      .subscribe(() -> {
         m.finish(bws);
         context.assertEquals(jsonContents, bws.getBuffer().toString("utf-8"));
         async.complete();
-      }, err -> {
-        context.fail(err);
-      });
+      }, context::fail);
   }
   
   /**
@@ -116,10 +114,8 @@ public class MultiMergerTest {
     MultiMerger m = new MultiMerger();
     Async async = context.async();
     m.init(cm1)
-      .flatMap(v -> m.init(cm2))
-      .subscribe(v -> {
-        context.fail();
-      }, err -> {
+      .andThen(m.init(cm2))
+      .subscribe(() -> context.fail("IllegalStateException expected"), err -> {
         context.assertTrue(err instanceof IllegalStateException);
         async.complete();
       });
@@ -144,12 +140,12 @@ public class MultiMergerTest {
     BufferWriteStream bws = new BufferWriteStream();
     Async async = context.async();
     m.init(cm1)
-      .flatMap(v -> m.merge(new DelegateChunkReadStream(chunk1), cm1, bws))
-      .flatMap(v -> m.merge(new DelegateChunkReadStream(chunk2), cm2, bws))
-      .subscribe(v -> {
-        context.fail();
-      }, err -> {
-        context.assertTrue(err instanceof IllegalStateException);
+      .toObservable()
+      .flatMapCompletable(v -> m.merge(new DelegateChunkReadStream(chunk1), cm1, bws))
+      .flatMapCompletable(v -> m.merge(new DelegateChunkReadStream(chunk2), cm2, bws))
+      .toCompletable()
+      .subscribe(() -> context.fail("IllegalStateException expected"), err -> {
+        context.assertTrue(err instanceof IllegalStateException, "Exception of type: " + err.getClass().getCanonicalName());
         async.complete();
       });
   }
