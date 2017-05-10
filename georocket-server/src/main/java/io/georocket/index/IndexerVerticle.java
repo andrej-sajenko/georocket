@@ -58,8 +58,10 @@ import io.vertx.core.logging.LoggerFactory;
 import io.vertx.rx.java.RxHelper;
 import io.vertx.rxjava.core.AbstractVerticle;
 import io.vertx.rxjava.core.eventbus.Message;
+import rx.Completable;
 import rx.Observable;
 import rx.Observable.Operator;
+import rx.Single;
 import rx.functions.Func1;
 
 /**
@@ -167,17 +169,17 @@ public class IndexerVerticle extends AbstractVerticle {
     queryCompiler.setQueryCompilers(indexerFactories);
     
     new ElasticsearchClientFactory(vertx).createElasticsearchClient(INDEX_NAME)
-      .doOnNext(es -> {
+      .doOnSuccess(es -> {
         client = es;
       })
-      .flatMap(v -> client.ensureIndex())
-      .flatMap(v -> ensureMapping())
-      .subscribe(es -> {
+      // TODO: usualy you would use Completable::andThen but since we
+      // have a site effect above, we can not do it
+      .flatMap(es -> client.ensureIndex().toSingleDefault(es))
+      .flatMapCompletable(es -> ensureMapping(indexerFactories, es))
+      .subscribe(() -> {
         registerMessageConsumers();
         startFuture.complete();
-      }, err -> {
-        startFuture.fail(err);
-      });
+      }, startFuture::fail);
   }
 
   private DefaultQueryCompiler createQueryCompiler() {
@@ -221,17 +223,17 @@ public class IndexerVerticle extends AbstractVerticle {
       .toObservable()
       .buffer(BUFFER_TIMESPAN, TimeUnit.MILLISECONDS, maxBulkSize)
       .onBackpressureBuffer() // unlimited buffer
-      .flatMap(messages -> {
+      .flatMapCompletable(messages -> {
         return onAdd(messages)
-          .onErrorReturn(err -> {
+          .onErrorComplete(err -> {
             // reply with error to all peers
             log.error("Could not index document", err);
             messages.forEach(msg -> msg.fail(throwableToCode(err), err.getMessage()));
             // ignore error
-            return null;
+            return true;
           });
-      }, maxParallelInserts)
-      .subscribe(v -> {
+      }).flatMap(Observable::just, maxParallelInserts).toCompletable()
+      .subscribe(() -> {
         // ignore
       }, err -> {
         // This is bad. It will unsubscribe the consumer from the eventbus!
@@ -248,8 +250,8 @@ public class IndexerVerticle extends AbstractVerticle {
     vertx.eventBus().<JsonObject>consumer(AddressConstants.INDEXER_DELETE)
       .toObservable()
       .subscribe(msg -> {
-        onDelete(msg.body()).subscribe(v -> {
-          msg.reply(v);
+        onDelete(msg.body()).subscribe(() -> {
+          msg.reply(null);
         }, err -> {
           log.error("Could not delete document", err);
           msg.fail(throwableToCode(err), throwableToMessage(err, ""));
@@ -264,8 +266,8 @@ public class IndexerVerticle extends AbstractVerticle {
     vertx.eventBus().<JsonObject>consumer(AddressConstants.INDEXER_UPDATE)
       .toObservable()
       .subscribe(msg -> {
-        onUpdate(msg.body()).subscribe(v -> {
-          msg.reply(v);
+        onUpdate(msg.body()).subscribe(() -> {
+          msg.reply(null);
         }, err -> {
           log.error("Could not update document", err);
           msg.fail(throwableToCode(err), throwableToMessage(err, ""));
@@ -280,9 +282,7 @@ public class IndexerVerticle extends AbstractVerticle {
     vertx.eventBus().<JsonObject>consumer(AddressConstants.INDEXER_QUERY)
       .toObservable()
       .subscribe(msg -> {
-        onQuery(msg.body()).subscribe(reply -> {
-          msg.reply(reply);
-        }, err -> {
+        onQuery(msg.body()).subscribe(msg::reply, err -> {
           log.error("Could not perform query", err);
           msg.fail(throwableToCode(err), throwableToMessage(err, ""));
         });
@@ -340,7 +340,8 @@ public class IndexerVerticle extends AbstractVerticle {
     }
   }
   
-  private Observable<Void> ensureMapping() {
+  private Completable ensureMapping(List<? extends IndexerFactory> indexerFactories,
+      ElasticsearchClient client) {
     // merge mappings from all indexers
     Map<String, Object> mappings = new HashMap<>();
     indexerFactories.stream().filter(f -> f instanceof DefaultMetaIndexerFactory)
@@ -348,7 +349,7 @@ public class IndexerVerticle extends AbstractVerticle {
     indexerFactories.stream().filter(f -> !(f instanceof DefaultMetaIndexerFactory))
         .forEach(factory -> MapUtils.deepMerge(mappings, factory.getMapping()));
 
-    return client.putMapping(TYPE_NAME, new JsonObject(mappings)).map(r -> null);
+    return client.putMapping(TYPE_NAME, new JsonObject(mappings)).toCompletable();
   }
   
   /**
@@ -360,7 +361,7 @@ public class IndexerVerticle extends AbstractVerticle {
    * index, and the respective messages from which the documents were created
    * @return an observable that completes when the operation has finished
    */
-  private Observable<Void> insertDocuments(String type,
+  private Completable insertDocuments(String type,
       List<Tuple3<String, JsonObject, Message<JsonObject>>> documents) {
     long startTimeStamp = System.currentTimeMillis();
     onIndexingStarted(startTimeStamp, documents.size());
@@ -372,7 +373,7 @@ public class IndexerVerticle extends AbstractVerticle {
       .map(Tuple3::v3)
       .toList();
     
-    return client.bulkInsert(type, docsToInsert).flatMap(bres -> {
+    return client.bulkInsert(type, docsToInsert).flatMapCompletable(bres -> {
       JsonArray items = bres.getJsonArray("items");
       for (int i = 0; i < items.size(); ++i) {
         JsonObject jo = items.getJsonObject(i);
@@ -393,7 +394,8 @@ public class IndexerVerticle extends AbstractVerticle {
       onIndexingFinished(stopTimeStamp - startTimeStamp, correlationIds,
           client.bulkResponseGetErrorMessage(bres));
 
-      return Observable.empty();
+      // TODO: returned an empty observable before, but why
+      return Completable.complete();
     });
   }
 
@@ -451,9 +453,9 @@ public class IndexerVerticle extends AbstractVerticle {
    * @param indexMeta metadata used to index the chunk
    * @return an observable that emits the document
    */
-  private Observable<Map<String, Object>> openChunkToDocument(
+  private Single<Map<String, Object>> openChunkToDocument(
       String path, ChunkMeta chunkMeta, IndexMeta indexMeta) {
-    return Observable.defer(() -> store.getOneObservable(path)
+    return Single.defer(() -> store.rxGetOne(path)
       .flatMap(chunk -> {
         List<? extends IndexerFactory> factories;
         Operator<? extends StreamEvent, Buffer> parserOperator;
@@ -468,7 +470,7 @@ public class IndexerVerticle extends AbstractVerticle {
           factories = jsonIndexerFactories;
           parserOperator = new JsonParserOperator();
         } else {
-          return Observable.error(new NoStackTraceThrowable(String.format(
+          return Single.error(new NoStackTraceThrowable(String.format(
               "Unexpected mime type '%s' while trying to index "
               + "chunk '%s'", mimeType, path)));
         }
@@ -486,7 +488,7 @@ public class IndexerVerticle extends AbstractVerticle {
             parserOperator, factories)
           .doAfterTerminate(chunk::close)
           // add results from meta indexers to converted document
-          .doOnNext(doc -> doc.putAll(metaResults));
+          .doOnSuccess(doc -> doc.putAll(metaResults));
       }))
       .retryWhen(makeRetry());
   }
@@ -504,7 +506,7 @@ public class IndexerVerticle extends AbstractVerticle {
    * @param <T> the type of the stream events created by <code>parserOperator</code>
    * @return an observable that will emit the document
    */
-  private <T extends StreamEvent> Observable<Map<String, Object>> chunkToDocument(
+  private <T extends StreamEvent> Single<Map<String, Object>> chunkToDocument(
       ChunkReadStream chunk, String fallbackCRSString,
       Operator<T, Buffer> parserOperator,
       List<? extends IndexerFactory> indexerFactories) {
@@ -527,7 +529,7 @@ public class IndexerVerticle extends AbstractVerticle {
         Map<String, Object> doc = new HashMap<>();
         indexers.forEach(i -> doc.putAll(i.getResult()));
         return doc;
-      });
+      }).toSingle();
   }
 
   /**
@@ -553,9 +555,9 @@ public class IndexerVerticle extends AbstractVerticle {
    * Will be called when chunks should be added to the index
    * @param messages the list of add messages that contain the paths to
    * the chunks to be indexed
-   * @return an observable that completes when the operation has finished
+   * @return completes when the operation has finished
    */
-  private Observable<Void> onAdd(List<Message<JsonObject>> messages) {
+  private Completable onAdd(List<Message<JsonObject>> messages) {
     return Observable.from(messages)
       .flatMap(msg -> {
         // get path to chunk from message
@@ -598,18 +600,19 @@ public class IndexerVerticle extends AbstractVerticle {
         // open chunk and create IndexRequest
         return openChunkToDocument(path, chunkMeta, indexMeta)
           .map(doc -> Tuple.tuple(path, new JsonObject(doc), msg))
+          .toObservable()
           .onErrorResumeNext(err -> {
             msg.fail(throwableToCode(err), throwableToMessage(err, ""));
             return Observable.empty();
           });
       })
       .toList()
-      .flatMap(l -> {
+      .flatMapCompletable(l -> {
         if (!l.isEmpty()) {
           return insertDocuments(TYPE_NAME, l);
         }
-        return Observable.empty();
-      });
+        return Completable.never();
+      }).toCompletable();
   }
 
   /**
@@ -617,14 +620,14 @@ public class IndexerVerticle extends AbstractVerticle {
    * @param body the message containing the query
    * @return an observable that emits the results of the query
    */
-  private Observable<JsonObject> onQuery(JsonObject body) {
+  private Single<JsonObject> onQuery(JsonObject body) {
     String search = body.getString("search");
     String path = body.getString("path");
     String scrollId = body.getString("scrollId");
     int pageSize = body.getInteger("pageSize", 100);
     String timeout = "1m"; // one minute
 
-    Observable<JsonObject> observable;
+    Single<JsonObject> single;
     if (scrollId == null) {
       // Execute a new search. Use a post_filter because we only want to get
       // a yes/no answer and no scoring (i.e. we only want to get matching
@@ -634,15 +637,15 @@ public class IndexerVerticle extends AbstractVerticle {
       try {
         postFilter = queryCompiler.compileQuery(search, path);
       } catch (Throwable t) {
-        return Observable.error(t);
+        return Single.error(t);
       }
-      observable = client.beginScroll(TYPE_NAME, null, postFilter, pageSize, timeout);
+      single = client.beginScroll(TYPE_NAME, null, postFilter, pageSize, timeout);
     } else {
       // continue searching
-      observable = client.continueScroll(scrollId, timeout);
+      single = client.continueScroll(scrollId, timeout);
     }
 
-    return observable.map(sr -> {
+    return single.map(sr -> {
       // iterate through all hits and convert them to JSON
       JsonObject hits = sr.getJsonObject("hits");
       long totalHits = hits.getLong("total");
@@ -673,25 +676,25 @@ public class IndexerVerticle extends AbstractVerticle {
    * @return an observable that emits a single item when the chunks have
    * been deleted successfully
    */
-  private Observable<Void> onDelete(JsonObject body) {
+  private Completable onDelete(JsonObject body) {
     JsonArray paths = body.getJsonArray("paths");
 
     // execute bulk request
     long startTimeStamp = System.currentTimeMillis();
     onDeletingStarted(startTimeStamp, paths.size());
 
-    return client.bulkDelete(TYPE_NAME, paths).flatMap(bres -> {
+    return client.bulkDelete(TYPE_NAME, paths).flatMapCompletable(bres -> {
       long stopTimeStamp = System.currentTimeMillis();
       if (client.bulkResponseHasErrors(bres)) {
         String error = client.bulkResponseGetErrorMessage(bres);
         log.error("One or more chunks could not be deleted");
         log.error(error);
         onDeletingFinished(stopTimeStamp - startTimeStamp, paths.size(), error);
-        return Observable.error(new NoStackTraceThrowable(
+        return Completable.error(new NoStackTraceThrowable(
                 "One or more chunks could not be deleted"));
       } else {
         onDeletingFinished(stopTimeStamp - startTimeStamp, paths.size(), null);
-        return Observable.just(null);
+        return Completable.complete();
       }
     });
   }
@@ -700,10 +703,10 @@ public class IndexerVerticle extends AbstractVerticle {
    * Remove or append meta data of existing chunks in the index. The chunks are
    * specified by a search query.
    * @param body the message containing the query and updates
-   * @return an observable that emits a single item when the chunks have
+   * @return complete when the chunks have
    * been updated successfully
    */
-  private Observable<Void> onUpdate(JsonObject body) {
+  private Completable onUpdate(JsonObject body) {
     String search = body.getString("search", "");
     String path = body.getString("path", "");
     JsonObject postFilter = queryCompiler.compileQuery(search, path);
@@ -713,7 +716,7 @@ public class IndexerVerticle extends AbstractVerticle {
     JsonArray updates = body.getJsonArray("updates", new JsonArray());
 
     if (updates.isEmpty()) {
-      return Observable.error(new NoStackTraceThrowable(
+      return Completable.error(new NoStackTraceThrowable(
           "Missing values to append or remove"));
     }
 
@@ -723,7 +726,7 @@ public class IndexerVerticle extends AbstractVerticle {
       case "property":
         return updateProperties(action, updates, postFilter);
       default:
-        return Observable.error(new NoStackTraceThrowable("Unknown update target"));
+        return Completable.error(new NoStackTraceThrowable("Unknown update target"));
     }
   }
 
@@ -733,10 +736,10 @@ public class IndexerVerticle extends AbstractVerticle {
    * @param action indicating if tags should be appended or removed
    * @param updates values to update
    * @param postFilter filter marking the chunks to updates
-   * @return an observable that emits a single item when the chunks have
+   * @return complete when the chunks have
    * been updated successfully
    */
-  private Observable<Void> updateTags(String action, JsonArray updates, JsonObject postFilter) {
+  private Completable updateTags(String action, JsonArray updates, JsonObject postFilter) {
     List<String> tags = updates.stream()
         .map(object -> Objects.toString(object, ""))
         .filter(entry -> !(entry.isEmpty()))
@@ -772,7 +775,7 @@ public class IndexerVerticle extends AbstractVerticle {
                   "}";
         break;
       default:
-        return Observable.error(new NoStackTraceThrowable("Unknown update action"));
+        return Completable.error(new NoStackTraceThrowable("Unknown update action"));
     }
 
     String lang = "painless";
@@ -783,12 +786,12 @@ public class IndexerVerticle extends AbstractVerticle {
         .put("lang", lang)
         .put("params", params);
 
-    return client.updateByQuery(TYPE_NAME, postFilter, updateScript).flatMap(sr -> {
+    return client.updateByQuery(TYPE_NAME, postFilter, updateScript).flatMapCompletable(sr -> {
       boolean timed_out = sr.getBoolean("timed_out", true);
       if (!timed_out) {
-        return Observable.just(null);
+        return Completable.complete();
       }
-      return Observable.error(new NoStackTraceThrowable(
+      return Completable.error(new NoStackTraceThrowable(
               "One or more tags could not be updated"));
     });
   }
@@ -802,7 +805,7 @@ public class IndexerVerticle extends AbstractVerticle {
    * @return an observable that emits a single item when the chunks have
    * been updated successfully
    */
-  private Observable<Void> updateProperties(String action, JsonArray updates, JsonObject postFilter) {
+  private Completable updateProperties(String action, JsonArray updates, JsonObject postFilter) {
     List<String> props = updates.stream()
       .map(object -> Objects.toString(object, ""))
       .filter(entry -> !(entry.isEmpty()))
@@ -821,7 +824,7 @@ public class IndexerVerticle extends AbstractVerticle {
           part = part.trim();
           String[] property = part.split(regex);
           if (property.length != 2) {
-            return Observable.error(new ServerAPIException(
+            return Completable.error(new ServerAPIException(
               ServerAPIException.INVALID_PROPERTY_SYNTAX_ERROR,
               "Invalid property syntax: " + part));
           }
@@ -853,7 +856,7 @@ public class IndexerVerticle extends AbstractVerticle {
         params.put("props", new JsonArray(props));
         break;
       default:
-        return Observable.error(new NoStackTraceThrowable("Unknown update action"));
+        return Completable.error(new NoStackTraceThrowable("Unknown update action"));
     }
 
     String lang = "painless";
@@ -862,12 +865,12 @@ public class IndexerVerticle extends AbstractVerticle {
         .put("lang", lang)
         .put("params", params);
 
-    return client.updateByQuery(TYPE_NAME, postFilter, updateScript).flatMap(sr -> {
+    return client.updateByQuery(TYPE_NAME, postFilter, updateScript).flatMapCompletable(sr -> {
       boolean timed_out = sr.getBoolean("timed_out", true);
       if (!timed_out) {
-        return Observable.just(null);
+        return Completable.complete();
       }
-      return Observable.error(new NoStackTraceThrowable(
+      return Completable.error(new NoStackTraceThrowable(
           "One or more tags could not be updated"));
     });
   }

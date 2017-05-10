@@ -12,6 +12,7 @@ import io.vertx.core.impl.NoStackTraceThrowable;
 import io.vertx.core.json.JsonObject;
 import io.vertx.rxjava.core.Vertx;
 import rx.Observable;
+import rx.Single;
 
 /**
  * A factory for {@link ElasticsearchClient} instances. Either starts an
@@ -37,7 +38,7 @@ public class ElasticsearchClientFactory {
    * operate on
    * @return an observable emitting an Elasticsearch client and runner
    */
-  public Observable<ElasticsearchClient> createElasticsearchClient(String indexName) {
+  public Single<ElasticsearchClient> createElasticsearchClient(String indexName) {
     JsonObject config = vertx.getOrCreateContext().config();
     
     boolean embedded = config.getBoolean(ConfigConstants.INDEX_ELASTICSEARCH_EMBEDDED, true);
@@ -48,13 +49,13 @@ public class ElasticsearchClientFactory {
     
     if (!embedded) {
       // just return the client
-      return Observable.just(client);
+      return Single.just(client);
     }
     
     return client.isRunning().flatMap(running -> {
       if (running) {
         // we don't have to start Elasticsearch again
-        return Observable.just(client);
+        return Single.just(client);
       }
 
       String home = config.getString(ConfigConstants.HOME);
@@ -64,7 +65,7 @@ public class ElasticsearchClientFactory {
         defaultElasticsearchDownloadUrl = IOUtils.toString(getClass().getResource(
                 "/elasticsearch_download_url.txt"), StandardCharsets.UTF_8);
       } catch (IOException e) {
-        return Observable.error(e);
+        return Single.error(e);
       }
 
       String elasticsearchDownloadUrl = config.getString(
@@ -73,7 +74,7 @@ public class ElasticsearchClientFactory {
       Pattern pattern = Pattern.compile("-([0-9]\\.[0-9]\\.[0-9])\\.zip$");
       Matcher matcher = pattern.matcher(elasticsearchDownloadUrl);
       if (!matcher.find()) {
-        return Observable.error(new NoStackTraceThrowable("Could not extract "
+        return Single.error(new NoStackTraceThrowable("Could not extract "
           + "version number from Elasticsearch download URL: "
           + elasticsearchDownloadUrl));
       }
@@ -87,9 +88,9 @@ public class ElasticsearchClientFactory {
       ElasticsearchInstaller installer = new ElasticsearchInstaller(vertx);
       ElasticsearchRunner runner = new ElasticsearchRunner(vertx);
       return installer.download(elasticsearchDownloadUrl, elasticsearchInstallPath)
-        .flatMap(path -> runner.runElasticsearch(host, port, path))
-        .flatMap(v -> runner.waitUntilElasticsearchRunning(client))
-        .map(v -> new EmbeddedElasticsearchClient(client, runner));
+        .flatMapCompletable(path -> runner.runElasticsearch(host, port, path))
+        .andThen(runner.waitUntilElasticsearchRunning(client))
+        .toSingleDefault(new EmbeddedElasticsearchClient(client, runner));
     });
   }
 }

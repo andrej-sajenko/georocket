@@ -19,6 +19,7 @@ import io.vertx.core.json.JsonObject;
 import io.vertx.core.logging.Logger;
 import io.vertx.core.logging.LoggerFactory;
 import io.vertx.rxjava.core.Vertx;
+import rx.Completable;
 import rx.Observable;
 
 /**
@@ -45,15 +46,14 @@ public class ElasticsearchRunner {
    * @param host the host Elasticsearch should bind to
    * @param port the port Elasticsearch should listen on
    * @param elasticsearchInstallPath the path where Elasticsearch is installed
-   * @return an observable that emits exactly one item when Elasticsearch has started
+   * @return complete when Elasticsearch has started
    */
-  public Observable<Void> runElasticsearch(String host, int port,
+  public Completable runElasticsearch(String host, int port,
       String elasticsearchInstallPath) {
     JsonObject config = vertx.getOrCreateContext().config();
     String storage = config.getString(ConfigConstants.STORAGE_FILE_PATH);
     String root = storage + "/index";
-    
-    return vertx.<Void>executeBlockingObservable(f -> {
+    return vertx.rxExecuteBlocking(f -> {
       log.info("Starting Elasticsearch ...");
       
       // get Elasticsearch executable
@@ -97,7 +97,7 @@ public class ElasticsearchRunner {
       } catch (IOException e) {
         f.fail(e);
       }
-    });
+    }).toCompletable();
   }
   
   /**
@@ -107,7 +107,7 @@ public class ElasticsearchRunner {
    * @return an observable that emits exactly one item when Elasticsearch
    * is running
    */
-  public Observable<Void> waitUntilElasticsearchRunning(
+  public Completable waitUntilElasticsearchRunning(
       ElasticsearchClient client) {
     final Throwable repeat = new NoStackTraceThrowable("");
     return Observable.<Boolean>create(subscriber -> {
@@ -128,7 +128,7 @@ public class ElasticsearchRunner {
       });
       // retry for 60 seconds
       return RxUtils.makeRetry(60, 1000, null).call(o);
-    }).map(r -> null);
+    }).toCompletable();
   }
   
   /**

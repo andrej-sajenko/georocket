@@ -59,6 +59,7 @@ public interface Splitter<E extends StreamEvent, M extends ChunkMeta> {
    * @return an observable that will emit a {@link Result} object (containing
    * a chunk and metadata) or emit nothing if no chunk was produced
    */
+  // TODO: maybe should be used here instead of observable
   default Observable<Result<M>> onEventObservable(E event) {
     Result<M> result = onEvent(event);
     if (result == null) {

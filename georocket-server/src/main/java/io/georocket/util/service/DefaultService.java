@@ -2,7 +2,7 @@ package io.georocket.util.service;
 
 import io.vertx.rxjava.core.Vertx;
 import io.vertx.rxjava.servicediscovery.ServiceDiscovery;
-import rx.Observable;
+import rx.Completable;
 
 /**
  * Default implementation of {@link Service}
@@ -50,7 +50,7 @@ public class DefaultService implements Service {
   }
   
   @Override
-  public Observable<Void> unpublish(ServiceDiscovery discovery) {
-    return discovery.unpublishObservable(registrationId);
+  public Completable unpublish(ServiceDiscovery discovery) {
+    return discovery.rxUnpublish(registrationId).toCompletable();
   }
 }

@@ -51,6 +51,7 @@ import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.rx.java.ObservableFuture;
 import io.vertx.rx.java.RxHelper;
+import rx.Completable;
 import rx.Observable;
 import rx.Single;
 
@@ -114,18 +115,18 @@ public class StoreEndpoint implements Endpoint {
    * @param merger the merger to initialize
    * @param search the search query
    * @param path the path where to perform the search
-   * @return an observable that will emit exactly one item when the merger
+   * @return comple when the merger
    * has been initialized with all results
    */
-  private Observable<Void> initializeMerger(MultiMerger merger, String search,
+  private Completable initializeMerger(MultiMerger merger, String search,
       String path) {
-    return store.getObservable(search, path)
+    return store.rxGet(search, path)
       .map(RxStoreCursor::new)
-      .flatMap(RxStoreCursor::toObservable)
+      .flatMapObservable(RxStoreCursor::toObservable)
       .map(Pair::getLeft)
-      .flatMap(merger::init)
+      .flatMapCompletable(merger::init)
       .defaultIfEmpty(null)
-      .last();
+      .toCompletable();
   }
   
   /**
@@ -134,33 +135,34 @@ public class StoreEndpoint implements Endpoint {
    * @param search the search query
    * @param path the path where to perform the search
    * @param out a write stream to write the merged chunks to
-   * @return an observable that will emit one item when all chunks have been merged
+   * @return complete when all chunks have been merged
    */
-  private Observable<Void> doMerge(MultiMerger merger, String search, String path,
+  // TODO: review this, it is a complex chain of operations
+  private Completable doMerge(MultiMerger merger, String search, String path,
       WriteStream<Buffer> out) {
-    return store.getObservable(search, path)
+    return store.rxGet(search, path)
       .map(RxStoreCursor::new)
-      .flatMap(RxStoreCursor::toObservable)
-      .flatMap(p -> store.getOneObservable(p.getRight())
+      .flatMapObservable(RxStoreCursor::toObservable)
+      .flatMapSingle(p -> store.rxGetOne(p.getRight())
         .flatMap(crs -> merger.merge(crs, p.getLeft(), out)
-          .map(v -> Pair.of(1L, 0L)) // left: count, right: not_accepted
+          .toSingleDefault(Pair.of(1L, 0L)) // left: count, right: not_accepted
           .onErrorResumeNext(t -> {
             if (t instanceof IllegalStateException) {
               // Chunk cannot be merged. maybe it's a new one that has
               // been added after the merger was initialized. Just
               // ignore it, but emit a warning later
-              return Observable.just(Pair.of(0L, 1L));
+              return Single.just(Pair.of(0L, 1L));
             }
-            return Observable.error(t);
+            return Single.error(t);
           })
-          .doOnTerminate(() -> {
+          .doAfterTerminate(() -> {
             // don't forget to close the chunk!
             crs.close();
-          })), 1 /* write only one chunk concurrently to the output stream */)
+          })))
       .defaultIfEmpty(Pair.of(0L, 0L))
       .reduce((p1, p2) -> Pair.of(p1.getLeft() + p2.getLeft(),
           p1.getRight() + p2.getRight()))
-      .flatMap(p -> {
+      .flatMapCompletable(p -> {
         long count = p.getLeft();
         long notaccepted = p.getRight();
         if (notaccepted > 0) {
@@ -172,11 +174,11 @@ public class StoreEndpoint implements Endpoint {
         }
         if (count > 0) {
           merger.finish(out);
-          return Observable.just(null);
+          return Completable.complete();
         } else {
-          return Observable.error(new FileNotFoundException("Not Found"));
+          return Completable.error(new FileNotFoundException("Not Found"));
         }
-      });
+      }).toCompletable();
   }
   
   /**
@@ -202,10 +204,8 @@ public class StoreEndpoint implements Endpoint {
     // merge all retrieved chunks
     MultiMerger merger = new MultiMerger();
     initializeMerger(merger, search, path)
-      .flatMap(v -> doMerge(merger, search, path, response))
-      .subscribe(v -> {
-        response.end();
-      }, err -> {
+      .andThen(doMerge(merger, search, path, response))
+      .subscribe(response::end, err -> {
         if (!(err instanceof FileNotFoundException)) {
           log.error("Could not perform query", err);
         }
@@ -219,7 +219,7 @@ public class StoreEndpoint implements Endpoint {
    * @return an observable emitting either the detected content type or an error
    * if the content type could not be detected or the file could not be read
    */
-  private Observable<String> detectContentType(String filepath) {
+  private Single<String> detectContentType(String filepath) {
     ObservableFuture<String> result = RxHelper.observableFuture();
     Handler<AsyncResult<String>> resultHandler = result.toHandler();
     
@@ -248,7 +248,7 @@ public class StoreEndpoint implements Endpoint {
       }
     });
     
-    return result;
+    return result.toSingle();
   }
   
   /**
@@ -322,7 +322,7 @@ public class StoreEndpoint implements Endpoint {
         request.resume();
         return pumpObservable;
       })
-      .flatMap(v -> {
+      .flatMapSingle(v -> {
         String contentTypeHeader = request.getHeader("Content-Type");
         String mimeType = null;
 
@@ -341,12 +341,12 @@ public class StoreEndpoint implements Endpoint {
           // a generic one, then try to guess it
           log.debug("Mime type '" + mimeType + "' is invalid or generic. "
               + "Trying to guess the right type.");
-          return detectContentType(filepath).doOnNext(guessedType -> {
+          return detectContentType(filepath).doOnEach(guessedType -> {
             log.debug("Guessed mime type '" + guessedType + "'.");
           });
         }
 
-        return Observable.just(mimeType);
+        return Single.just(mimeType);
       })
       .subscribe(detectedContentType -> {
         // run importer
@@ -391,8 +391,8 @@ public class StoreEndpoint implements Endpoint {
     HttpServerRequest request = context.request();
     String search = request.getParam("search");
     
-    store.deleteObservable(search, path)
-      .subscribe(v -> {
+    store.rxDelete(search, path)
+      .subscribe(() -> {
         response
           .setStatusCode(204)
           .end();

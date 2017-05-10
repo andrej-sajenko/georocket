@@ -4,7 +4,8 @@ import io.vertx.core.AsyncResult;
 import io.vertx.core.Handler;
 import io.vertx.rx.java.ObservableFuture;
 import io.vertx.rx.java.RxHelper;
-import rx.Observable;
+import rx.Completable;
+import rx.Single;
 
 /**
  * Wraps around {@link Store} and adds methods to be used with RxJava
@@ -40,13 +41,13 @@ public class RxStore implements Store {
    * @param chunkMeta the chunk's metadata
    * @param path the path where the chunk should be stored (may be null)
    * @param indexMeta metadata affecting the way the chunk will be indexed
-   * @return an observable that emits exactly one item when the operation has completed
+   * @return completes when the operation has completed
    */
-  public Observable<Void> addObservable(String chunk, ChunkMeta chunkMeta,
+  public Completable rxAdd(String chunk, ChunkMeta chunkMeta,
       String path, IndexMeta indexMeta) {
     ObservableFuture<Void> o = RxHelper.observableFuture();
     add(chunk, chunkMeta, path, indexMeta, o.toHandler());
-    return o;
+    return o.toCompletable();
   }
 
   @Override
@@ -57,13 +58,13 @@ public class RxStore implements Store {
   /**
    * Observable version of {@link #getOne(String, Handler)}
    * @param path the absolute path to the chunk
-   * @return an observable that will emit a read stream that can be used to
+   * @return emit a read stream that can be used to
    * get the chunk's contents
    */
-  public Observable<ChunkReadStream> getOneObservable(String path) {
+  public Single<ChunkReadStream> rxGetOne(String path) {
     ObservableFuture<ChunkReadStream> o = RxHelper.observableFuture();
     getOne(path, o.toHandler());
-    return o;
+    return o.toSingle();
   }
 
   @Override
@@ -75,12 +76,12 @@ public class RxStore implements Store {
    * Observable version of {@link #delete(String, String, Handler)}
    * @param search the search query
    * @param path the path where to search for the chunks (may be null)
-   * @return an observable that emits exactly one item when the operation has completed
+   * @return complete when the operation has completed
    */
-  public Observable<Void> deleteObservable(String search, String path) {
+  public Completable rxDelete(String search, String path) {
     ObservableFuture<Void> o = RxHelper.observableFuture();
     delete(search, path, o.toHandler());
-    return o;
+    return o.toCompletable();
   }
 
   @Override
@@ -92,12 +93,12 @@ public class RxStore implements Store {
    * Observable version of {@link #get(String, String, Handler)}
    * @param search the search query
    * @param path the path where to search for the chunks (may be null)
-   * @return an observable that emits a cursor that can be used to iterate
+   * @return emits a cursor that can be used to iterate
    * over all matched chunks
    */
-  public Observable<StoreCursor> getObservable(String search, String path) {
+  public Single<StoreCursor> rxGet(String search, String path) {
     ObservableFuture<StoreCursor> o = RxHelper.observableFuture();
     get(search, path, o.toHandler());
-    return o;
+    return o.toSingle();
   }
 }

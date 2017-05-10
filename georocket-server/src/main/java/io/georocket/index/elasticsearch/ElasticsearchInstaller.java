@@ -29,7 +29,9 @@ import io.vertx.rxjava.core.file.AsyncFile;
 import io.vertx.rxjava.core.file.FileSystem;
 import io.vertx.rxjava.core.http.HttpClient;
 import io.vertx.rxjava.core.http.HttpClientRequest;
+import rx.Completable;
 import rx.Observable;
+import rx.Single;
 
 /**
  * Download and extract Elasticsearch to a given location if it does not exist
@@ -55,9 +57,9 @@ public class ElasticsearchInstaller {
    * @param downloadUrl the URL to the ZIP file containing Elasticsearch
    * @param destPath the path to the destination folder where the downloaded ZIP
    * file should be extracted to
-   * @return an observable emitting the path to the extracted Elasticsearch
+   * @return emitting the path to the extracted Elasticsearch
    */
-  public Observable<String> download(String downloadUrl, String destPath) {
+  public Single<String> download(String downloadUrl, String destPath) {
     return download(downloadUrl, destPath, true);
   }
   
@@ -71,13 +73,13 @@ public class ElasticsearchInstaller {
    * ZIP file should be stripped away.
    * @return an observable emitting the path to the extracted Elasticsearch
    */
-  public Observable<String> download(String downloadUrl, String destPath,
+  public Single<String> download(String downloadUrl, String destPath,
       boolean strip) {
     FileSystem fs = vertx.fileSystem();
-    return fs.existsObservable(destPath)
+    return fs.rxExists(destPath)
         .flatMap(exists -> {
           if (exists) {
-            return Observable.just(destPath);
+            return Single.just(destPath);
           }
           return downloadNoCheck(downloadUrl, destPath, strip);
         });
@@ -91,9 +93,9 @@ public class ElasticsearchInstaller {
    * file should be extracted to
    * @param strip <code>true</code> if the first path element of all items in the
    * ZIP file should be stripped away.
-   * @return an observable emitting the path to the extracted Elasticsearch
+   * @return emitting the path to the extracted Elasticsearch
    */
-  private Observable<String> downloadNoCheck(String downloadUrl, String destPath,
+  private Single<String> downloadNoCheck(String downloadUrl, String destPath,
       boolean strip) {
     log.info("Downloading Elasticsearch ...");
     log.info("Source: " + downloadUrl);
@@ -113,15 +115,15 @@ public class ElasticsearchInstaller {
   /**
    * Download the ZIP file containing Elasticsearch to a temporary location
    * @param downloadUrl the URL to the ZIP file
-   * @return an observable emitting the location of the temporary file
+   * @return emitting the location of the temporary file
    */
-  private Observable<String> downloadArchive(String downloadUrl) {
+  private Single<String> downloadArchive(String downloadUrl) {
     // create temporary file
     File archiveFile;
     try {
       archiveFile = File.createTempFile("elasticsearch", "tmp");
     } catch (IOException e) {
-      return Observable.error(e);
+      return Single.error(e);
     }
     
     // open temporary file
@@ -131,14 +133,14 @@ public class ElasticsearchInstaller {
         .setCreate(true)
         .setWrite(true)
         .setTruncateExisting(true);
-    return fs.openObservable(archivePath, openOptions)
+    return fs.rxOpen(archivePath, openOptions)
         .flatMap(file -> {
           return doDownload(downloadUrl, file)
             .doAfterTerminate(() -> {
               file.flush();
               file.close();
             })
-            .map(v -> archivePath);
+            .toSingleDefault(archivePath);
         });
   }
   
@@ -146,10 +148,10 @@ public class ElasticsearchInstaller {
    * Download a file
    * @param downloadUrl the URL to download from
    * @param dest the destination file
-   * @return an observable emitting exactly one item once the file has been
+   * @return complete once the file has been
    * downloaded
    */
-  private Observable<Void> doDownload(String downloadUrl, AsyncFile dest) {
+  private Completable doDownload(String downloadUrl, AsyncFile dest) {
     ObservableFuture<Void> observable = RxHelper.observableFuture();
     Handler<AsyncResult<Void>> handler = observable.toHandler();
     
@@ -200,7 +202,7 @@ public class ElasticsearchInstaller {
     
     req.end();
     
-    return observable;
+    return observable.toCompletable();
   }
 
   /**
@@ -223,10 +225,10 @@ public class ElasticsearchInstaller {
    * @param destPath the destination path
    * @param strip <code>true</code> if the first path element of all items in the
    * ZIP file should be stripped away.
-   * @return an observable emitting the path to the extracted contents (i.e.
+   * @return emitting the path to the extracted contents (i.e.
    * <code>destPath</code>)
    */
-  private Observable<String> extractArchive(String archivePath, String destPath,
+  private Single<String> extractArchive(String archivePath, String destPath,
       boolean strip) {
     ObservableFuture<String> observable = RxHelper.observableFuture();
     Handler<AsyncResult<String>> handler = observable.toHandler();
@@ -259,7 +261,7 @@ public class ElasticsearchInstaller {
         File executable = new File(archiveFile, "bin/elasticsearch");
         executable.setExecutable(true);
       }
-    });
+    }).toSingle();
   }
   
   /**
